@@ -5,6 +5,7 @@ use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use indicatif::ProgressBar;
 use rand::Rng;
+use reqwest::ClientBuilder;
 use reqwest::{
     header::{
         HeaderMap, HeaderName, HeaderValue, InvalidHeaderValue, ToStrError, AUTHORIZATION,
@@ -358,10 +359,25 @@ impl ApiBuilder {
         Ok(headers)
     }
 
+    fn support_proxy(client: ClientBuilder) -> Result<Client, ApiError> {
+        let client = if let Ok(proxy_url) = std::env::var("HTTP_PROXY")
+            .or_else(|_| std::env::var("HTTPS_PROXY"))
+            .or_else(|_| std::env::var("http_proxy"))
+            .or_else(|_| std::env::var("https_proxy"))
+        {
+            log::info!("proxy url: {proxy_url}");
+            let proxy = reqwest::Proxy::all(proxy_url)?;
+            client.proxy(proxy).build()?
+        } else {
+            client.build()?
+        };
+        Ok(client)
+    }
     /// Consumes the builder and builds the final [`Api`]
     pub fn build(self) -> Result<Api, ApiError> {
         let headers = self.build_headers()?;
-        let client = Client::builder().default_headers(headers.clone()).build()?;
+        let client = Client::builder().default_headers(headers.clone());
+        let client = Self::support_proxy(client)?;
 
         // Policy: only follow relative redirects
         // See: https://github.com/huggingface/huggingface_hub/blob/9c6af39cdce45b570f0b7f8fad2b311c96019804/src/huggingface_hub/file_download.py#L411
@@ -384,8 +400,8 @@ impl ApiBuilder {
 
         let relative_redirect_client = Client::builder()
             .redirect(relative_redirect_policy)
-            .default_headers(headers)
-            .build()?;
+            .default_headers(headers);
+        let relative_redirect_client = Self::support_proxy(relative_redirect_client)?;
         Ok(Api {
             endpoint: self.endpoint,
             cache: self.cache,
